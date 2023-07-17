@@ -1,0 +1,119 @@
+--- st.c
++++ st.c
+@@ -2058,7 +2225,7 @@ tsetscroll(int t, int b)
+ void
+ tsetmode(int priv, int set, const int *args, int narg)
+ {
+-	int alt; const int *lim;
++	const int *lim;
+ 
+ 	for (lim = args + narg; args < lim; ++args) {
+ 		if (priv) {
+@@ -2119,25 +2286,18 @@ tsetmode(int priv, int set, const int *args, int narg)
+ 				xsetmode(set, MODE_8BIT);
+ 				break;
+ 			case 1049: /* swap screen & set/restore cursor as xterm */
+-				if (!allowaltscreen)
+-					break;
+-				tcursor((set) ? CURSOR_SAVE : CURSOR_LOAD);
+-				/* FALLTHROUGH */
+ 			case 47: /* swap screen */
+-			case 1047:
++			case 1047: /* swap screen, clearing alternate screen */
+ 				if (!allowaltscreen)
+ 					break;
+-				alt = IS_SET(MODE_ALTSCREEN);
+-				if (alt) {
+-					tclearregion(0, 0, term.col-1,
+-							term.row-1);
+-				}
+-				if (set ^ alt) /* set is always 1 or 0 */
+-					tswapscreen();
+-				if (*args != 1049)
+-					break;
+-				/* FALLTHROUGH */
++				if (set)
++					tloadaltscreen(*args == 1049, *args == 1049);
++				else
++					tloaddefscreen(*args == 1047, *args == 1049);
++				break;
+ 			case 1048:
++				if (!allowaltscreen)
++          break;
+ 				tcursor((set) ? CURSOR_SAVE : CURSOR_LOAD);
+ 				break;
+ 			case 2004: /* 2004: bracketed paste mode */
+@@ -2189,7 +2349,7 @@ void
+ csihandle(void)
+ {
+ 	char buf[40];
+-	int len;
++	int n, x;
+ 
+ 	switch (csiescseq.mode[0]) {
+ 	default:
+@@ -2287,20 +2447,30 @@ csihandle(void)
+ 	case 'J': /* ED -- Clear screen */
+ 		switch (csiescseq.arg[0]) {
+ 		case 0: /* below */
+-			tclearregion(term.c.x, term.c.y, term.col-1, term.c.y);
++			tclearregion(term.c.x, term.c.y, term.col-1, term.c.y, 1);
+ 			if (term.c.y < term.row-1) {
+-				tclearregion(0, term.c.y+1, term.col-1,
+-						term.row-1);
++				tclearregion(0, term.c.y+1, term.col-1, term.row-1, 1);
+ 			}
+ 			break;
+ 		case 1: /* above */
+-			if (term.c.y > 1)
+-				tclearregion(0, 0, term.col-1, term.c.y-1);
+-			tclearregion(0, term.c.y, term.c.x, term.c.y);
++			if (term.c.y >= 1)
++				tclearregion(0, 0, term.col-1, term.c.y-1, 1);
++			tclearregion(0, term.c.y, term.c.x, term.c.y, 1);
+ 			break;
+ 		case 2: /* all */
+-			tclearregion(0, 0, term.col-1, term.row-1);
+-			break;
++			if (IS_SET(MODE_ALTSCREEN)) {
++  			tclearregion(0, 0, term.col-1, term.row-1, 1);
++  			break;
++      }
++			/* vte does this:
++			tscrollup(0, term.row-1, term.row, SCROLL_SAVEHIST); */
++      
++			/* alacritty does this: */
++			for (n = term.row-1; n >= 0 && tlinelen(term.line[n]) == 0; n--);
++			if (n >= 0)
++				tscrollup(0, term.row-1, n+1, SCROLL_SAVEHIST);
++			tscrollup(0, term.row-1, term.row-n-1, SCROLL_NOSAVEHIST);
++      break;
+ 		default:
+ 			goto unknown;
+ 		}
+@@ -2363,9 +2533,11 @@ csihandle(void)
+ 		tdeleteline(csiescseq.arg[0]);
+ 		break;
+ 	case 'X': /* ECH -- Erase <n> char */
++		if (csiescseq.arg[0] < 0)
++			return;
+ 		DEFAULT(csiescseq.arg[0], 1);
+-		tclearregion(term.c.x, term.c.y,
+-				term.c.x + csiescseq.arg[0] - 1, term.c.y);
++		x = MIN(term.c.x + csiescseq.arg[0], term.col) - 1;
++		tclearregion(term.c.x, term.c.y, x, term.c.y, 1);
+ 		break;
+ 	case 'P': /* DCH -- Delete <n> char */
+ 		DEFAULT(csiescseq.arg[0], 1);
+@@ -2391,9 +2563,9 @@ csihandle(void)
+ 			ttywrite("\033[0n", sizeof("\033[0n") - 1, 0);
+ 			break;
+ 		case 6: /* Report Cursor Position (CPR) "<row>;<column>R" */
+-			len = snprintf(buf, sizeof(buf), "\033[%i;%iR",
++			n = snprintf(buf, sizeof(buf), "\033[%i;%iR",
+ 			               term.c.y+1, term.c.x+1);
+-			ttywrite(buf, len, 0);
++			ttywrite(buf, n, 0);
+ 			break;
+ 		default:
+ 			goto unknown;
